@@ -1,7 +1,17 @@
 
 zones_path = minetest.get_modpath("zones")
 
+dofile(zones_path.."/hud_helpers.lua");
+dofile(zones_path.."/global_step_callback.lua");
 dofile(zones_path.."/datastore.lua");
+
+
+GlobalStepCallback.register_globalstep_per_player("update_hud", function (player, dtime)
+	local zones_hud = datastore.get_or_create_table(player, "zones_hud")
+	if zones_hud and zones_hud.hud then
+		Hud.update_hud(zones_hud.hud, player)
+	end
+end)
 
 zones = {
 	dropsites = {}
@@ -71,29 +81,26 @@ function ResourceArea.Create(start, area, resource_type)
 end
 
 
+
 local function update_dropmarker_hud(user, show)
+	local zones_hud = datastore.get_or_create_table(user, "zones_hud")
+	if not zones_hud.hud then
+		zones_hud.hud = Hud.Create()
+	end
+	local theHud = zones_hud.hud
 	local player_store = user:get_meta()
 	local hud_ids = datastore.get_or_create_table(user, "dropmarker_hud_ids")
 	local areas = minetest.deserialize(player_store:get_string("dropmarker_areas"))
 	if show and areas then
+		local new_points = {}
 		for i, area in ipairs(areas) do
-			-- TODO: eventually reuse hud
-			if i <= #hud_ids then
-				user:hud_remove(hud_ids[i])
-			end
-			hud_ids[i] = user:hud_add{
-				hud_elem_type = "image_waypoint",
-				scale={x=2,y=2},
-				name = "dropmarkers_area_" .. tostring(i),
-				text = "zones_frame_bg.png^zones_dropsite.png^zones_frame_blue.png^[noalpha",
-				world_pos = vector.multiply(vector.add(area.min, area.max), 0.5),
-				z_index = -300,
-			}
+			local area_center = vector.multiply(vector.add(area.min, area.max), 0.5)
+			local image = "zones_frame_bg.png^zones_dropsite.png^zones_frame_blue.png^[noalpha"
+			table.insert(new_points, HudPoint.Create(area_center, image)) -- name = "dropmarkers_area_" .. tostring(i), 
 		end
+		Hud.add_hud_points(theHud, user, new_points)
 	else
-		for _, hud_id in ipairs(hud_ids) do
-			user:hud_remove(hud_id)
-		end
+		Hud.remove_all(theHud, user)
 	end
 end
 
@@ -149,33 +156,31 @@ minetest.register_craftitem("zones:dropmarker", {
 })
 
 
+local function create_inventorycube_image(node_name)
+	local node = minetest.registered_nodes[node_name]	
+	local tile_name_fixed = string.gsub(node.tiles[1], "[\\^]", "&")
+	return "[inventorycube{" .. tile_name_fixed .. "{" .. tile_name_fixed .. "{" .. tile_name_fixed
+end
+
+
 local function update_resourceareas_hud(user, show)
+	local zones_hud = datastore.get_or_create_table(user, "zones_hud")
+	if not zones_hud.hud then
+		zones_hud.hud = Hud.Create()
+	end
+	local theHud = zones_hud.hud
 	local player_store = user:get_meta()
 	local hud_ids = datastore.get_or_create_table(user, "resourcearea_hud_ids")
 	local areas = minetest.deserialize(player_store:get_string("resource_areas"))
 	if show and areas then
+		local new_points = {}
 		for i, area in ipairs(areas) do
-			-- TODO: eventually reuse hud
-			if i <= #hud_ids then
-				user:hud_remove(hud_ids[i])
-			end
-			local node = minetest.registered_nodes[area.type]
-			
-			local fixed_name = string.gsub(node.tiles[1], "[\\^]", "&")
-			
-			hud_ids[i] = user:hud_add{
-				hud_elem_type = "image_waypoint",
-				scale={x=2,y=2},
-				name = "resource_area_" .. tostring(i),
-				text = "[inventorycube{" .. fixed_name .. "{" .. fixed_name .. "{" .. fixed_name .. "^[resize:32x32^zones_frame_yellow.png",
-				world_pos = area.start,
-				z_index = -300,
-			}
+			local image = create_inventorycube_image(area.type) .. "^[resize:32x32^zones_frame_yellow.png"
+			table.insert(new_points, HudPoint.Create(area.start, image)) -- name = "dropmarkers_area_" .. tostring(i), 
 		end
+		Hud.add_hud_points(theHud, user, new_points)
 	else
-		for _, hud_id in ipairs(hud_ids) do
-			user:hud_remove(hud_id)
-		end
+		Hud.remove_all(theHud, user)
 	end
 end
 
@@ -202,30 +207,53 @@ local function toggle_scan(_, user, pointed_thing)
 	end
 end
 
--- TODO: mostly copied from technic:prospector
-local function scan(_, user, pointed_thing)
+
+local function get_metadata(toolstack)
+	local m = minetest.deserialize(toolstack:get_metadata())
+	if not m then m = {} end
+	if not m.charge then m.charge = 0 end
+	if not m.target then m.target = "" end
+	if not m.look_depth then m.look_depth = 7 end
+	if not m.look_radius then m.look_radius = 1 end
+	return m
+end
+
+-- mostly copied from technic:prospector, except the part where the zone is created
+local function scan(toolstack, user, pointed_thing)
+	if not user or not user:is_player() or user.is_fake_player then return end
+	if pointed_thing.type ~= "node" then return end
+	local toolmeta = get_metadata(toolstack)
+	local look_diameter = toolmeta.look_radius * 2 + 1
+	local charge_to_take = toolmeta.look_depth * (toolmeta.look_depth + 1) * look_diameter * look_diameter
+	if toolmeta.charge < charge_to_take then return end
+	if toolmeta.target == "" then
+		minetest.chat_send_player(user:get_player_name(), "Right-click to set target block type")
+		return
+	end
+	if not technic.creative_mode then
+		toolmeta.charge = toolmeta.charge - charge_to_take
+		toolstack:set_metadata(minetest.serialize(toolmeta))
+		technic.set_RE_wear(toolstack, toolmeta.charge, technic.power_tools[toolstack:get_name()])
+	end
+	-- What in the heaven's name is this evil sorcery ?
 	local start_pos = pointed_thing.under
 	local forward = minetest.facedir_to_dir(minetest.dir_to_facedir(user:get_look_dir(), true))
 	local right = forward.x ~= 0 and { x=0, y=1, z=0 } or (forward.y ~= 0 and { x=0, y=0, z=1 } or { x=1, y=0, z=0 })
 	local up = forward.x ~= 0 and { x=0, y=0, z=1 } or (forward.y ~= 0 and { x=1, y=0, z=0 } or { x=0, y=1, z=0 })
+	local base_pos = vector.add(start_pos, vector.multiply(vector.add(right, up), - toolmeta.look_radius))
 	local found = false
-	local look_depth = 21
-	local look_radius = 2
-	local look_diameter = 5
-	local base_pos = vector.add(start_pos, vector.multiply(vector.add(right, up), - look_radius))
-	for f = 0, look_depth-1 do
+	for f = 0, toolmeta.look_depth-1 do
 		for r = 0, look_diameter-1 do
 			for u = 0, look_diameter-1 do
-				local node_name = minetest.get_node(
+				if minetest.get_node(
 						vector.add(
 							vector.add(
 								vector.add(base_pos,
 									vector.multiply(forward, f)),
 								vector.multiply(right, r)),
 							vector.multiply(up, u))
-						).name
-					if node_name == "moonrealm:ironore" then
-						found = true
+						).name == toolmeta.target then
+					found = true
 					break
 				end
 			end
@@ -233,14 +261,23 @@ local function scan(_, user, pointed_thing)
 		end
 		if found then break end
 	end
+	if math.random() < 0.02 then
+		found = not found
+	end
+
+	minetest.sound_play("technic_prospector_"..(found and "hit" or "miss"), {
+		pos = vector.add(user:get_pos(), { x = 0, y = 1, z = 0 }),
+		gain = 1.0,
+		max_hear_distance = 10
+	})
 	if found then
 		local max = vector.add(
 			vector.add(
 				vector.add(base_pos,
-					vector.multiply(forward, look_depth-1)),
+					vector.multiply(forward, toolmeta.look_depth-1)),
 				vector.multiply(right, look_diameter-1)),
 			vector.multiply(up, look_diameter-1))
-		add_resourcearea(user, ResourceArea.Create(start_pos, MinMaxArea.Create(base_pos, max), "moonrealm:ironore"))
+		add_resourcearea(user, ResourceArea.Create(start_pos, MinMaxArea.Create(base_pos, max), toolmeta.target))
 	end
 end
 
@@ -253,3 +290,11 @@ minetest.register_craftitem("zones:scanner", {
 	on_place = scan
 
 })
+
+
+-- hook into the technic prospector to get the information as zone
+if minetest.get_modpath("technic") then
+	minetest.override_item("technic:prospector", {
+		on_use = scan
+	})
+end

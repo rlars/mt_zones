@@ -4,23 +4,24 @@ datastore = {
 	_data = {}
 }
 
-function datastore.get_players()
-	local players = {}
-	for player, _ in pairs(datastore._data) do
-		table.insert(players, player)
+function datastore.get_playernames()
+	local player_names = {}
+	for player_name, _ in pairs(datastore._data) do
+		table.insert(player_names, player_name)
 	end
-	return players
+	return player_names
 end
 
 -- returns write-accessible data for specified player
 -- if there is none, it will be created
 function datastore.get_data(player)
-	if not datastore._data[player] then
-		datastore._data[player] =
+	local player_name = player:get_player_name()
+	if not datastore._data[player_name] then
+		datastore._data[player_name] =
 		{
 		}
 	end
-	return datastore._data[player]
+	return datastore._data[player_name]
 end
 
 function datastore.get_or_create_table(player, tablename)
@@ -32,12 +33,12 @@ function datastore.get_or_create_table(player, tablename)
 end
 
 function datastore.remove_player(player)
-	datastore._data[player] = nil
+	datastore._data[player:get_player_name()] = nil
 end
 
 minetest.register_on_leaveplayer(
     function (player, timed_out)
-        datastore.remove_player(player)
+        datastore.remove_player(player:get_player_name())
     end
 )
 
