@@ -24,6 +24,15 @@ function datastore.get_data(player)
 	return datastore._data[player_name]
 end
 
+function datastore.get_table(player, tablename)
+    local player_data = datastore.get_data(player)
+	if not player_data[tablename] then
+		minetest.log("error", "[datastore] Table " .. tostring(tablename) .. " does not exist for player " .. player:get_player_name())
+        return {}
+    end
+    return player_data[tablename]
+end
+
 function datastore.get_or_create_table(player, tablename)
     local player_data = datastore.get_data(player)
 	if not player_data[tablename] then

@@ -135,11 +135,30 @@ function Hud.add_hud_points(self, player, hud_points)
 end
 
 
+-- remove all points
 function Hud.remove_all(self, player)
 	for _, hud_point in ipairs(self._registered_points) do
 		player:hud_remove(hud_point.hud_id)
 	end
 	self._registered_points = {}
+end
+
+-- remove given points
+function Hud.remove(self, player, points)
+	if not points then return end
+	local hashed_points = {}
+	for _, hud_point in ipairs(points) do
+		player:hud_remove(hud_point.hud_id)
+		hashed_points[hud_point] = hud_point
+	end
+	local i = 1
+	while i <= #self._registered_points do
+		if hashed_points[self._registered_points[i]] then
+			table.remove(self._registered_points, i)
+		else
+			i = i + 1
+		end
+	end
 end
 
 
