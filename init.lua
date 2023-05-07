@@ -130,7 +130,6 @@ end
 local function use_dropmarker_tool(_, user, pointed_thing)
 	local target_pos = nil
 
-	minetest.debug("create dropmarker")
 	if pointed_thing.type == "node" then
 		target_pos = pointed_thing.above
 		if not first_drop_marked then

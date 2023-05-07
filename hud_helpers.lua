@@ -107,18 +107,23 @@ local function update_single_point_image(player, hud_point)
 	player:hud_change(hud_point.hud_id, "text", hud_point.image)
 end
 
+-- update one point world_pos
+local function update_single_point_pos(player, hud_point)
+	player:hud_change(hud_point.hud_id, "world_pos", hud_point.pos)
+end
+
 -- update one point relative index as z_index
 local function update_single_point_relative_index(player, hud_point, new_z)
 	player:hud_change(hud_point.hud_id, "z_index", -300 - new_z)
 end
 
--- update one point z_index
+-- update one point scale
 local function update_single_point_scale(player, hud_point)
 	local new_scale = 3 - math.log(hud_point.cached_distance) / 2
 	player:hud_change(hud_point.hud_id, "scale", { x = new_scale, y = new_scale })
 end
 
--- hud_points is a table with values { pos = vector, image = "image" }
+-- hud_points is a table of [HudPoint]s
 function Hud.add_hud_points(self, player, hud_points)
 	for _, hud_point in ipairs(hud_points) do
 		table.insert(self._registered_points, hud_point)
@@ -168,6 +173,7 @@ function Hud.update_hud(self, player, force)
 		update_distances(get_player_eye_pos(player), self._registered_points)
 		order_positions_by_distance(self._registered_points)
 		for i, hud_point in ipairs(self._registered_points) do
+			update_single_point_pos(player, hud_point)
 			update_single_point_relative_index(player, hud_point, i)
 			update_single_point_scale(player, hud_point)
 		end
