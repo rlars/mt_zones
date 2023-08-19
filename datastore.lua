@@ -41,6 +41,11 @@ function datastore.get_or_create_table(player, tablename)
     return player_data[tablename]
 end
 
+function datastore.set_table(player, tablename, table)
+    local player_data = datastore.get_data(player)
+	player_data[tablename] = table
+end
+
 function datastore.remove_player(player)
 	datastore._data[player:get_player_name()] = nil
 end

@@ -4,22 +4,30 @@
 local FIRST_PERSON_EYE_OFFSET = vector.new(0, 1.5, 0)
 
 Hud = {}
-function Hud.Create()
-	return {
-		_registered_points = {},
-		_update_last_player_pos = vector.new(-100000000000, -100000000000, -100000000000),
-		_hovered_point = nil,
-	}
+
+function Hud:new(o)
+    o = o or {}
+    setmetatable(o, self)
+    self.__index = self
+	o._registered_points = {}
+	o._update_last_player_pos = vector.new(-100000000000, -100000000000, -100000000000)
+	o._hovered_point = nil
+    return o
 end
 
 HudPoint = {}
-function HudPoint.Create(pos, image)
+
+-- shape must be one of "circle", "square"; default is "circle"
+-- events is optional, if not nil must be table containing on_select and on_unselect functions
+function HudPoint.new(pos, image, shape, events, data)
 	return {
 		pos = pos,
 		hud_id = nil,
 		-- cached distance to player
 		cached_distance = nil,
-		image = image
+		image = image,
+		shape = shape or "circle",
+		events = events
 	}
 end
 
@@ -70,7 +78,7 @@ local function trace_player_view(player, hud_points)
 		first_person_eye_offset = FIRST_PERSON_EYE_OFFSET
 		local eye_pos = vector.add(player:get_pos(), first_person_eye_offset)
 		local look_dir = player:get_look_dir()
-		local min_similarity = 0.98
+		local min_similarity = 0.99
 		for _, hud_point in ipairs(hud_points) do
 			local point_dir = vector.normalize(vector.subtract(hud_point.pos, eye_pos))
 			local similarity = vector.dot(look_dir, point_dir)
@@ -88,12 +96,22 @@ local function length_2d(v)
 end
 
 
+local function get_default_background_image(shape)
+	if shape == "square" then return "zones_frame_bg.png" end
+	return "background_unselected.png"
+end
+
+local function get_hovered_background_image(shape)
+	if shape == "square" then return "zones_frame_bg_selected.png^zones_frame_blue.png" end
+	return "background_selected.png"
+end
+
 
 local function add_new_hud_point(player, hud_point)
 	local hud_id = player:hud_add {
 		hud_elem_type = "image_waypoint",
 		scale={x=1,y=1},
-		text = hud_point.image,
+		text = get_default_background_image(hud_point.shape) .."^" .. hud_point.image,
 		world_pos = hud_point.pos,
 		z_index = -300,
 	}
@@ -123,8 +141,8 @@ local function update_single_point_scale(player, hud_point)
 	player:hud_change(hud_point.hud_id, "scale", { x = new_scale, y = new_scale })
 end
 
--- hud_points is a table of [HudPoint]s
-function Hud.add_hud_points(self, player, hud_points)
+-- hud_points is a list of [HudPoint]s
+function Hud:add_hud_points(player, hud_points)
 	for _, hud_point in ipairs(hud_points) do
 		table.insert(self._registered_points, hud_point)
 	end
@@ -139,6 +157,28 @@ function Hud.add_hud_points(self, player, hud_points)
 	end
 end
 
+-- info must be a table containing pos, text, color or nil to clear
+function Hud:show_additional_information(player, info)
+	if info then
+		local hud_id = player:hud_add {
+			hud_elem_type = "text",
+			scale={x=10,y=3},
+			text = info.text,
+			--world_pos = info.pos,
+			position = {x=0.5,y=0.65},
+			z_index = -150,
+			--offset = {x=0,y=0},
+			style = 4,
+			size = {x=2,y=2},
+			number = info.color
+		}
+		self.additional_info_id = hud_id
+	elseif self.additional_info_id then
+		player:hud_remove(self.additional_info_id)
+		self.additional_info_id = nil
+	end
+end
+
 
 -- remove all points
 function Hud.remove_all(self, player)
@@ -149,7 +189,7 @@ function Hud.remove_all(self, player)
 end
 
 -- remove given points
-function Hud.remove(self, player, points)
+function Hud:remove(player, points)
 	if not points then return end
 	local hashed_points = {}
 	for _, hud_point in ipairs(points) do
@@ -166,8 +206,7 @@ function Hud.remove(self, player, points)
 	end
 end
 
-
-function Hud.update_hud(self, player, force)
+function Hud:update_hud(player, force)
 	-- nothing to update if player did not move
 	if force or vector.distance(self._update_last_player_pos, player:get_pos()) > 1 then
 		update_distances(get_player_eye_pos(player), self._registered_points)
@@ -182,20 +221,20 @@ function Hud.update_hud(self, player, force)
 	
 	local selected_point = trace_player_view(player, self._registered_points)
 
+	if self._selected_point == selected_point then return end
+
 	if self._selected_point then
-		self._selected_point.image = self._selected_point.old_image
-		player:hud_change(self._selected_point.hud_id, "text", self._selected_point.image)
+		player:hud_change(self._selected_point.hud_id, "text", get_default_background_image(self._selected_point.shape) .. "^" .. self._selected_point.image)
+		if self._selected_point.events then self._selected_point.events.on_unselect(self._selected_point, player) end
 	end
 	
 	if selected_point then
-		selected_point.old_image = selected_point.image
-		player:hud_change(selected_point.hud_id, "text", selected_point.image .. "^[brighten")
+		player:hud_change(selected_point.hud_id, "text", get_hovered_background_image(selected_point.shape) .. "^" .. selected_point.image)
+		if selected_point.events then selected_point.events.on_select(selected_point, player) end
 	end
 	self._selected_point = selected_point
 end
 
-local function remove_hud_points(player, hud_points)
-	for _, hud_point in ipairs(hud_points) do
-		player:hud_remove(hud_point.hud_id)
-	end
+function Hud:get_selected_point()
+	return self._selected_point
 end

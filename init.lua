@@ -5,11 +5,10 @@ dofile(zones_path.."/hud_helpers.lua");
 dofile(zones_path.."/global_step_callback.lua");
 dofile(zones_path.."/datastore.lua");
 
-
 GlobalStepCallback.register_globalstep_per_player("update_hud", function (player, dtime)
-	local zones_hud = datastore.get_or_create_table(player, "zones_hud")
-	if zones_hud and zones_hud.hud then
-		Hud.update_hud(zones_hud.hud, player)
+	local hud = datastore.get_table(player, "hud")
+	if hud then
+		hud:update_hud(player)
 	end
 end)
 
@@ -81,10 +80,22 @@ function ResourceArea.Create(start, area, resource_type)
 end
 
 
+local function on_select_droparea(hud_point, player)
+	hud_point.drawn_shape = vizlib.draw_area(vector.add(hud_point.area.min, vector.new(-.6, -.6, -.6)),
+											 vector.add(hud_point.area.max, vector.new(.6, .6, .6)),
+											 {player = player, color = "#0000ff", infinite = true})
+	local hud = datastore.get_table(player, "hud")
+	hud:show_additional_information(player, {pos = vector.multiply(vector.add(hud_point.area.min, hud_point.area.max), 0.5), text = hud_point.area.name, color = "0x0000ff"})
+end
+local function on_unselect_droparea(hud_point, player)
+	vizlib.erase_shape(hud_point.drawn_shape)
+	hud_point.drawn_shape = nil
+	local hud = datastore.get_table(player, "hud")
+	hud:show_additional_information(player, nil)
+end
 
 local function update_dropmarker_hud(user, show)
-	local zones_hud = datastore.get_table(user, "zones_hud")
-	local theHud = zones_hud.hud
+	local hud = datastore.get_table(user, "hud")
 	local player_store = user:get_meta()
 	local hud_ids = datastore.get_or_create_table(user, "dropmarker_hud_ids")
 	local areas = minetest.deserialize(player_store:get_string("dropmarker_areas"))
@@ -92,14 +103,16 @@ local function update_dropmarker_hud(user, show)
 		local new_points = {}
 		for i, area in ipairs(areas) do
 			local area_center = vector.multiply(vector.add(area.min, area.max), 0.5)
-			local image = "zones_frame_bg.png^zones_dropsite.png^zones_frame_blue.png^[noalpha"
-			table.insert(new_points, HudPoint.Create(area_center, image)) -- name = "dropmarkers_area_" .. tostring(i), 
+			local image = "zones_dropsite.png"
+			local new_point = HudPoint.new(area_center, image, "square", {on_select = on_select_droparea, on_unselect = on_unselect_droparea})
+			new_point.area = area
+			table.insert(new_points, new_point)
 		end
-		Hud.add_hud_points(theHud, user, new_points)
-		zones_hud.dropmarker_areas = new_points
+		hud:add_hud_points(user, new_points)
+		hud.dropmarker_areas = new_points
 	else
-		Hud.remove(theHud, user, zones_hud.dropmarker_areas)
-		zones_hud.dropmarker_areas = {}
+		hud:remove(user, hud.dropmarker_areas)
+		hud.dropmarker_areas = {}
 	end
 end
 
@@ -111,8 +124,38 @@ local function add_droparea(user, area)
 	table.insert(areas, area)
 	player_store:set_string("dropmarker_areas", minetest.serialize(areas))
 end
+local function find_droparea(user, name)
+	local player_store = user:get_meta()
+	local areas = minetest.deserialize(player_store:get_string("dropmarker_areas"))
+	for index, area in ipairs(areas) do
+		if area.name == name then return index end
+		if (area.name == nil or area.name == "") and (name == nil or name == "") then return index end
+	end
+end
+local function delete_droparea(user, index)
+	local player_store = user:get_meta()
+	local areas = minetest.deserialize(player_store:get_string("dropmarker_areas"))
+	if not areas then areas = {} end
+	table.remove(areas, index)
+	player_store:set_string("dropmarker_areas", minetest.serialize(areas))
+end
 
-first_drop_marked = nil
+local function on_zone_formspec_received(player, formname, fields)
+	minetest.debug(dump(formname))
+	minetest.debug(dump(fields))
+	if string.find(formname, "zones:edit_zone_") then
+		local zone_name = string.sub(formname, string.len("zones:edit_zone_") + 1)
+		if fields.delete then
+			local zone_index = find_droparea(player, zone_name)
+			while zone_index do
+				delete_droparea(player, zone_index)
+				zone_index = find_droparea(player, zone_name)
+			end
+		end
+	end
+end
+
+minetest.register_on_player_receive_fields(on_zone_formspec_received)
 
 local function toggle_dropmarker(_, user, pointed_thing)
 	local player_store = user:get_meta()
@@ -126,19 +169,46 @@ local function toggle_dropmarker(_, user, pointed_thing)
 	end
 end
 
+local function is_name_in_list(list, name)
+	for _, entry in ipairs(list) do
+		if entry.name == name then return true end
+	end
+	return false
+end
+
+local function get_next_free_name(list, prefix)
+	i = 0
+	while i < 16384 do
+		local name = prefix .. string.format("%X", i)
+		if not is_name_in_list(list, name) then
+			return name
+		end
+		i = i + 1
+	end
+	return get_next_free_name(list, prefix .. "X")
+end
 
 local function use_dropmarker_tool(_, user, pointed_thing)
-	local target_pos = nil
-
-	if pointed_thing.type == "node" then
-		target_pos = pointed_thing.above
-		if not first_drop_marked then
-			first_drop_marked = target_pos
+	local hud = datastore.get_table(user, "hud")
+	local selected_dropsite = hud:get_selected_point()
+	if selected_dropsite then
+		minetest.show_formspec(user:get_player_name(), "zones:edit_zone_" .. (selected_dropsite.area.name or ""), "formspec_version[2]size[14,8]" ..
+			"button_exit[10,6.5;2,1;delete;delete]")
+	elseif pointed_thing.type == "node" then
+		local target_pos = pointed_thing.above
+		local player_store = user:get_meta()
+		local dropmarker_start_pos = minetest.deserialize(player_store:get_string("dropmarker_start_pos"))
+		if not dropmarker_start_pos then
+			player_store:set_string("dropmarker_start_pos", minetest.serialize(target_pos))
+			hud.dropmarker_shape = vizlib.draw_square(vector.add(target_pos, vector.new(0, -0.4, 0)), 0.5, "y", {color="#0000ff", infinite=true})
 		else
-			local area = MinMaxArea.Create(first_drop_marked, target_pos)
-			table.insert(zones.dropsites, area)
+			local area = MinMaxArea.Create(dropmarker_start_pos, target_pos)
+			local player_store = user:get_meta()
+			area.name = get_next_free_name(minetest.deserialize(player_store:get_string("dropmarker_areas")), "D_")
 			add_droparea(user, area)
-			first_drop_marked = nil
+			player_store:set_string("dropmarker_start_pos", nil)
+			vizlib.erase_shape(hud.dropmarker_shape)
+			hud.dropmarker_shape = nil
 		end
 	end
 end
@@ -146,7 +216,7 @@ end
 
 minetest.register_craftitem("zones:dropmarker", {
 	description = "Drop",
-	inventory_image = "zones_dropsite.png^zones_frame_blue.png",
+	inventory_image = "zones_frame_bg.png^zones_frame_blue.png^zones_dropsite.png^[noalpha",
 	on_use = toggle_dropmarker,
 	on_secondary_use = use_dropmarker_tool,
 	on_place = use_dropmarker_tool
@@ -162,8 +232,7 @@ end
 
 
 local function update_resourceareas_hud(user, show)
-	local zones_hud = datastore.get_table(user, "zones_hud")
-	local theHud = zones_hud.hud
+	local hud = datastore.get_table(user, "hud")
 	local player_store = user:get_meta()
 	local hud_ids = datastore.get_or_create_table(user, "resourcearea_hud_ids")
 	local areas = minetest.deserialize(player_store:get_string("resource_areas"))
@@ -171,13 +240,13 @@ local function update_resourceareas_hud(user, show)
 		local new_points = {}
 		for i, area in ipairs(areas) do
 			local image = create_inventorycube_image(area.type) .. "^[resize:32x32^zones_frame_yellow.png"
-			table.insert(new_points, HudPoint.Create(area.start, image)) -- name = "dropmarkers_area_" .. tostring(i), 
+			table.insert(new_points, HudPoint.new(area.start, image)) -- name = "dropmarkers_area_" .. tostring(i), 
 		end
-		Hud.add_hud_points(theHud, user, new_points)
-		zones_hud.resource_areas = new_points
+		hud:add_hud_points(user, new_points)
+		hud.resource_areas = new_points
 	else
-		Hud.remove(theHud, user, zones_hud.resource_areas)
-		zones_hud.resource_areas = nil
+		hud:remove(user, hud.resource_areas)
+		hud.resource_areas = nil
 	end
 end
 
@@ -212,17 +281,12 @@ end
 
 
 minetest.register_on_joinplayer(function(player)
-	local zones_hud = datastore.get_or_create_table(player, "zones_hud")
-	if not zones_hud.hud then
-		zones_hud.hud = Hud.Create()
-	end
+	datastore.set_table(player, "hud", Hud:new())
 end
 )
 
 local function is_holding_prospector(player, dtime)
 	local item = player:get_wielded_item()
-	local zones_hud = datastore.get_table(player, "zones_hud")
-	local theHud = zones_hud.hud
 
 	local player_store = player:get_meta()
 	local state = player_store:get_string("show_resourceareas")
